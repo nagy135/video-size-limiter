@@ -9,7 +9,8 @@ final class AppModel: ObservableObject {
     @Published var stage: Stage = .intake { didSet { resize?(stage) } }
     @Published var source: URL?
     @Published var info: MediaInfo?
-    @Published var target = UserDefaults.standard.string(forKey: "lastTargetMB") ?? "25"
+    @Published var target = "50"
+    @Published var commands: [CommandInvocation] = []
     @Published var error: String?
     @Published var progress = 0.0
     @Published var status = ""
@@ -48,7 +49,7 @@ final class AppModel: ObservableObject {
         guard url.isFileURL, FileManager.default.isReadableFile(atPath: url.path) else {
             error = "This file cannot be read. Choose a local video file."; return
         }
-        error = nil; output = nil; source = url; stage = .reading
+        error = nil; output = nil; commands = []; target = "50"; source = url; stage = .reading
         let token = Cancellation(); cancellation = token
         Task {
             do {
@@ -65,14 +66,15 @@ final class AppModel: ObservableObject {
         do {
             let bytes = try Compressor.targetBytes(megabytes: target)
             let tools = try Tools.discover()
-            UserDefaults.standard.set(target, forKey: "lastTargetMB")
             let token = Cancellation(); cancellation = token
-            error = nil; progress = 0; status = "Reading video…"; stage = .working
+            error = nil; commands = []; progress = 0; status = "Reading video…"; stage = .working
             let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Documents/Videos", isDirectory: true)
             Task { [self] in
                 do {
                     let result = try await Task.detached { [weak self] in
-                        try Compressor(tools: tools).compress(source: source, targetBytes: bytes, directory: directory, cancellation: token) { update in
+                        try Compressor(tools: tools).compress(source: source, targetBytes: bytes, directory: directory, cancellation: token, commandStarted: { command in
+                            Task { @MainActor [weak self] in self?.commands.append(command) }
+                        }) { update in
                             Task { @MainActor [weak self] in
                                 guard self?.stage == .working else { return }
                                 self?.progress = update.fraction; self?.status = update.message
@@ -89,7 +91,7 @@ final class AppModel: ObservableObject {
     }
 
     func cancel() { cancellation?.cancel(); status = "Cancelling…" }
-    func reset() { guard !busy else { return }; source = nil; info = nil; output = nil; error = nil; stage = .intake }
+    func reset() { guard !busy else { return }; source = nil; info = nil; output = nil; commands = []; target = "50"; error = nil; stage = .intake }
     func reveal() { if let output { NSWorkspace.shared.activateFileViewerSelecting([output]) } }
 }
 
@@ -125,7 +127,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Maximum file size").font(.headline)
                     HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        TextField("25", text: $model.target).textFieldStyle(.plain)
+                        TextField("50", text: $model.target).textFieldStyle(.plain)
                             .font(.system(size: 38, weight: .medium, design: .rounded))
                             .focused($sizeFocused).onSubmit { if model.targetValid { model.compress() } }
                             .accessibilityLabel("Maximum file size in megabytes")
@@ -150,6 +152,7 @@ struct ContentView: View {
                         Text(model.progress, format: .percent.precision(.fractionLength(0))).monospacedDigit()
                     }.font(.caption).foregroundStyle(.secondary)
                 }
+                commandPanel
                 Button("Cancel", action: model.cancel).keyboardShortcut(.escape, modifiers: [])
             case .done:
                 Image(systemName: "checkmark.circle.fill").font(.system(size: 38)).foregroundStyle(.green)
@@ -164,6 +167,7 @@ struct ContentView: View {
                     Button("Compress another", action: model.reset)
                     Button("Show in Finder", action: model.reveal).buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
                 }
+                if !model.commands.isEmpty { commandPanel }
             }
             if let error = model.error {
                 ScrollView { Text(error).font(.callout).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
@@ -182,6 +186,61 @@ struct ContentView: View {
             return true
         }
     }
+    private var commandPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("FFmpeg commands").font(.headline)
+                Spacer()
+                Text("Flags").foregroundStyle(.blue).fontWeight(.semibold)
+                Text("Values").foregroundStyle(.orange)
+                Button("Copy all") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(model.commands.map(\.shellCommand).joined(separator: "\n"), forType: .string)
+                }.disabled(model.commands.isEmpty)
+            }.font(.caption)
+            ScrollViewReader { scroll in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if model.commands.isEmpty {
+                            Text("Waiting for FFmpeg…").foregroundStyle(.secondary)
+                        }
+                        ForEach(Array(model.commands.enumerated()), id: \.offset) { index, command in
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Command \(index + 1)" + (index == model.commands.count - 1 && model.stage == .working ? " · latest" : ""))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text(highlighted(command))
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }.id(index)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                }
+                .onChange(of: model.commands.count) { _, count in scroll.scrollTo(count - 1, anchor: .top) }
+            }
+            .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
+        }
+        .frame(maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("FFmpeg command history")
+    }
+
+    private func highlighted(_ command: CommandInvocation) -> AttributedString {
+        var result = AttributedString()
+        for (index, token) in command.tokens.enumerated() {
+            let separator = index == 0 ? "" : (token.role == .flag || token.role == .path ? "\n  " : " ")
+            var part = AttributedString(separator + CommandInvocation.shellQuote(token.text))
+            switch token.role {
+            case .flag: part.foregroundColor = .blue; part.font = .system(size: 12, weight: .semibold, design: .monospaced)
+            case .value: part.foregroundColor = .orange
+            case .executable: part.foregroundColor = .primary; part.font = .system(size: 12, weight: .semibold, design: .monospaced)
+            case .path: part.foregroundColor = .orange
+            }
+            result += part
+        }
+        return result
+    }
+
     private var fileHeader: some View {
         HStack(spacing: 12) {
             Image(systemName: "video.fill").font(.title2).foregroundStyle(accent)
@@ -212,8 +271,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.contentView = NSHostingView(rootView: ContentView(model: model))
         model.resize = { [weak self] stage in
             guard let window = self?.window else { return }
-            let height: CGFloat = stage == .intake ? 380 : (stage == .size ? 310 : 290)
-            let size = NSSize(width: stage == .intake ? 460 : 420, height: height + (self?.model.error == nil ? 0 : 110))
+            let showsCommands = stage == .working || (stage == .done && self?.model.commands.isEmpty == false)
+            let height: CGFloat = showsCommands ? 580 : (stage == .intake ? 380 : (stage == .size ? 310 : 290))
+            let width: CGFloat = showsCommands ? 680 : (stage == .intake ? 460 : 420)
+            let size = NSSize(width: width, height: height + (self?.model.error == nil ? 0 : 110))
             var frame = window.frame
             let content = window.frameRect(forContentRect: NSRect(origin: .zero, size: size)).size
             frame.origin.y += frame.height - content.height

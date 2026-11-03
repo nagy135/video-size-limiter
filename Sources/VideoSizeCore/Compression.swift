@@ -81,7 +81,7 @@ public final class Compressor: @unchecked Sendable {
 
     @discardableResult
     private func run(_ executable: URL, _ args: [String], cancellation: Cancellation,
-                     line: ((String) -> Void)? = nil) throws -> Data {
+                     started: (() -> Void)? = nil, line: ((String) -> Void)? = nil) throws -> Data {
         try cancellation.check()
         let process = Process()
         process.executableURL = executable
@@ -96,6 +96,7 @@ public final class Compressor: @unchecked Sendable {
         process.standardError = errorHandle
         defer { try? errorHandle.close(); try? FileManager.default.removeItem(at: log); cancellation.clear() }
         try cancellation.launch(process)
+        started?()
         var output = Data()
         var pending = ""
         while true {
@@ -138,6 +139,7 @@ public final class Compressor: @unchecked Sendable {
 
     public func compress(source: URL, targetBytes: Int64, directory: URL,
                          cancellation: Cancellation = Cancellation(),
+                         commandStarted: @escaping (CommandInvocation) -> Void = { _ in },
                          update: @escaping (CompressionUpdate) -> Void = { _ in }) throws -> URL {
         guard targetBytes >= 1000 else { throw CompressionError("The size limit is too small.") }
         try cancellation.check()
@@ -194,7 +196,9 @@ public final class Compressor: @unchecked Sendable {
                     passArgs += ["-progress", "pipe:1", "-nostats"]
                     if pass == 1 { passArgs += ["-f", "null", "/dev/null"] }
                     else { passArgs += [staged.path] }
-                    try run(tools.ffmpeg, passArgs, cancellation: cancellation) { line in
+                    try run(tools.ffmpeg, passArgs, cancellation: cancellation, started: {
+                        commandStarted(CommandInvocation(executable: self.tools.ffmpeg.path, arguments: passArgs))
+                    }) { line in
                         if line.hasPrefix("out_time_us="), let time = Double(line.dropFirst(12)) {
                             let fraction = min(1, max(0, time / 1_000_000 / info.duration))
                             let overall = twoPass ? (Double(pass - 1) + fraction) / 2 : fraction

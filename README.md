@@ -6,8 +6,10 @@ A small native macOS app written in Swift, using SwiftUI and AppKit. Requires ma
 
 1. Open **Video Size Limiter.app**.
 2. Drop one video onto the window, click **Choose video…** (⌘O), or copy a file in Finder and press **⌘V**. Pasting an absolute path or a file URL works too. You can also drop a video on the Dock icon or use Finder's Open With.
-3. Enter the maximum size in **MB** and press Return. One MB is 1,000,000 bytes. Decimal sizes and a decimal comma are supported.
+3. Enter the maximum size in **MB** (starts at **50 MB** for each video) and press Return. One MB is 1,000,000 bytes. Decimal sizes and a decimal comma are supported.
 4. The app verifies the finished file is **strictly below** the limit, saves it in `~/Documents/Videos`, and selects it in Finder.
+
+During compression, the window shows every FFmpeg command as it starts, including each pass and retry. Flags are blue and values are orange. Use **Copy all** for shell-quoted commands. The history remains visible after completion.
 
 Outputs use `original-name-compressed.ext`, adding a numeric suffix when necessary. Originals are untouched. A file already below the limit is copied without re-encoding. Cancel terminates FFmpeg and removes the partial output.
 

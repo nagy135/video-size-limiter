@@ -19,7 +19,15 @@ final class CompressionTests: XCTestCase {
         try execute(tools.ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=4", "-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:v", "libx264", "-crf", "12", "-c:a", "aac", "-b:a", "96k", "-metadata", "title=Keep this title", "-shortest", source.path])
         let engine = Compressor(tools: tools)
         let directory = root.appendingPathComponent("output")
-        let result = try engine.compress(source: source, targetBytes: 220_000, directory: directory)
+        var commands: [CommandInvocation] = []
+        let result = try engine.compress(source: source, targetBytes: 220_000, directory: directory, commandStarted: { commands.append($0) })
+        XCTAssertEqual(commands.count, 2)
+        XCTAssertEqual(commands.first?.executable, tools.ffmpeg.path)
+        for (index, command) in commands.enumerated() {
+            let passIndex = try XCTUnwrap(command.arguments.firstIndex(of: "-pass:v:0"))
+            XCTAssertEqual(command.arguments[passIndex + 1], String(index + 1))
+            XCTAssertTrue(command.arguments.contains(source.path))
+        }
         let original = try engine.probe(source)
         let output = try engine.probe(result)
         XCTAssertEqual(output.video?.codec_name, "h264")
@@ -73,9 +81,9 @@ final class CompressionTests: XCTestCase {
         try execute(tools.ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=5", "-c:v", "libx264", "-crf", "10", source.path])
         let token = Cancellation()
         let directory = root.appendingPathComponent("results")
-        XCTAssertThrowsError(try Compressor(tools: tools).compress(source: source, targetBytes: 150_000, directory: directory, cancellation: token) { progress in
+        XCTAssertThrowsError(try Compressor(tools: tools).compress(source: source, targetBytes: 150_000, directory: directory, cancellation: token, update: { progress in
             if progress.fraction > 0 { token.cancel() }
-        }) { XCTAssertTrue($0 is CancellationError) }
+        })) { XCTAssertTrue($0 is CancellationError) }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [])
     }
 
