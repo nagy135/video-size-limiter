@@ -26,10 +26,12 @@ With Xcode's Swift toolchain installed:
 
 ```sh
 swift test
-./scripts/build-app.sh
-open 'build/Video Size Limiter.app'
+./scripts/install-app.sh
+open '/Applications/Video Size Limiter.app'
 ```
 
-The build script creates an ad-hoc signed local app. It uses the current Mac's architecture and installed FFmpeg; it is not a self-contained notarized distribution. To install locally, copy the app to `~/Applications`.
+The install script builds an ad-hoc signed release app and installs it at `/Applications/Video Size Limiter.app`, verifying the staged bundle before replacing the previous installation. Run it again after changes. Your account needs write access to `/Applications`. If the app is running, quit and reopen it after installation to use the new build.
+
+For a build without installation, run `./scripts/build-app.sh`; the bundle is written to `build/Video Size Limiter.app`. Both scripts use the current Mac's architecture and installed FFmpeg; this is not a self-contained notarized distribution.
 
 The package can also be opened directly in Xcode. `VideoSizeCore` contains the compression engine, and `VideoSizeLimiter` contains the native UI. Integration tests generate synthetic media and verify actual size, codec, frame rate, dimensions, unchanged audio packets, copying, collision handling, invalid input, and cancellation.
