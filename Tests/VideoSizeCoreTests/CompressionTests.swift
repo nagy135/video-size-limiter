@@ -24,12 +24,13 @@ final class CompressionTests: XCTestCase {
         XCTAssertEqual(commands.count, 2)
         XCTAssertEqual(commands.first?.executable, tools.ffmpeg.path)
         for (index, command) in commands.enumerated() {
-            let passIndex = try XCTUnwrap(command.arguments.firstIndex(of: "-pass:v:0"))
+            let passIndex = try XCTUnwrap(command.arguments.firstIndex(of: "-pass:v"))
             XCTAssertEqual(command.arguments[passIndex + 1], String(index + 1))
             XCTAssertTrue(command.arguments.contains(source.path))
         }
         let original = try engine.probe(source)
         let output = try engine.probe(result)
+        XCTAssertEqual(output.format.tags?["title"], "Keep this title")
         XCTAssertEqual(output.video?.codec_name, "h264")
         XCTAssertEqual(output.video?.width, 640)
         XCTAssertEqual(output.video?.height, 360)
@@ -63,6 +64,25 @@ final class CompressionTests: XCTestCase {
         let output = try engine.compress(source: source, targetBytes: 45_000, directory: root)
         XCTAssertLessThan(try fileSize(output), 45_000)
         XCTAssertEqual(try engine.probe(output).video?.codec_name, "hevc")
+    }
+
+    func testRotatedVideoKeepsOrientationWithDefaultEncodingSettings() throws {
+        let tools = try Tools.discover()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("original.mp4")
+        let source = root.appendingPathComponent("rotated.mp4")
+        try execute(tools.ffmpeg, ["-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24:duration=3", "-c:v", "libx264", "-crf", "10", original.path])
+        try execute(tools.ffmpeg, ["-v", "error", "-display_rotation:v:0", "90", "-i", original.path, "-c", "copy", source.path])
+        let engine = Compressor(tools: tools)
+        XCTAssertTrue(try engine.probe(source).video?.hasRotation == true)
+        let output = try engine.compress(source: source, targetBytes: 60_000, directory: root)
+        let info = try engine.probe(output)
+        XCTAssertEqual(info.video?.width, 320)
+        XCTAssertEqual(info.video?.height, 240)
+        XCTAssertEqual(info.video?.side_data_list?.compactMap(\.rotation), try engine.probe(source).video?.side_data_list?.compactMap(\.rotation))
+        XCTAssertLessThan(try fileSize(output), 60_000)
     }
 
     func testCancellationAndInvalidMedia() throws {

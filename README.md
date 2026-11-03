@@ -9,13 +9,13 @@ A small native macOS app written in Swift, using SwiftUI and AppKit. Requires ma
 3. Enter the maximum size in **MB** (starts at **50 MB** for each video) and press Return. One MB is 1,000,000 bytes. Decimal sizes and a decimal comma are supported.
 4. The app verifies the finished file is **strictly below** the limit, saves it in `~/Documents/Videos`, and selects it in Finder.
 
-During compression, the window shows every FFmpeg command as it starts, including each pass and retry. Flags are blue and values are orange. Use **Copy all** for shell-quoted commands. The history remains visible after completion.
+During compression, the window shows every FFmpeg command as it starts, including each pass and retry. Commands rely on FFmpeg defaults for presets, pixel format, metadata, and chapters; explicit options cover codec, bitrate, track preservation, timing, and pass/progress handling. Flags are blue and values are orange. Use **Copy all** for shell-quoted commands. The history remains visible after completion.
 
 Outputs use `original-name-compressed.ext`, adding a numeric suffix when necessary. Originals are untouched. A file already below the limit is copied without re-encoding. Cancel terminates FFmpeg and removes the partial output.
 
 ## Compression behavior
 
-- Preserves the video codec, dimensions, pixel format, timing, and original container extension. No resizing or frame-rate reduction is requested. Automatic rotation is disabled so pixels are not transformed; FFmpeg carries the source display metadata forward.
+- Preserves the video codec, dimensions, pixel format, timing, and original container extension. No resizing or frame-rate reduction is requested. Automatic rotation is disabled for rotated sources so pixels are not transformed; FFmpeg carries the source display metadata forward.
 - Copies audio, subtitles, attachments, and other streams rather than re-encoding them; requests preservation of metadata and chapters. Container-specific/private metadata is subject to FFmpeg's remuxing support. Encoding profile, encoder-specific settings, and compressed bitstream naturally change when re-encoding video.
 - Supports size-targeted H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, and MPEG-2. Other codecs and files with multiple main video tracks produce an explicit error rather than silently changing codec or dropping tracks.
 - H.264, VP8, VP9, and MPEG-4 use two-pass encoding. Other supported codecs use bitrate encoding with measured retries. A 3% initial safety allowance covers container overhead; measured overshoots trigger lower-bitrate retries. Final byte size and basic stream properties are checked before publishing the result.

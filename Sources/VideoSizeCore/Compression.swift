@@ -62,8 +62,18 @@ public struct MediaInfo: Decodable, Sendable {
         public let height: Int?
         public let avg_frame_rate: String?
         public let disposition: [String: Int]?
+        public struct SideData: Decodable, Sendable { public let rotation: Double? }
+        public let side_data_list: [SideData]?
+        public let tags: [String: String]?
+        public var hasRotation: Bool {
+            side_data_list?.contains { ($0.rotation ?? 0).truncatingRemainder(dividingBy: 360) != 0 } == true
+                || (Double(tags?["rotate"] ?? "") ?? 0).truncatingRemainder(dividingBy: 360) != 0
+        }
     }
-    public struct Format: Decodable, Sendable { public let duration: String? }
+    public struct Format: Decodable, Sendable {
+        public let duration: String?
+        public let tags: [String: String]?
+    }
     public let streams: [Stream]
     public let format: Format
     public var video: Stream? { streams.first { $0.codec_type == "video" && $0.disposition?["attached_pic"] != 1 } }
@@ -80,12 +90,13 @@ public final class Compressor: @unchecked Sendable {
     public init(tools: Tools) { self.tools = tools }
 
     @discardableResult
-    private func run(_ executable: URL, _ args: [String], cancellation: Cancellation,
+    private func run(_ executable: URL, _ args: [String], cancellation: Cancellation, workingDirectory: URL? = nil,
                      started: (() -> Void)? = nil, line: ((String) -> Void)? = nil) throws -> Data {
         try cancellation.check()
         let process = Process()
         process.executableURL = executable
         process.arguments = args
+        process.currentDirectoryURL = workingDirectory
         process.standardInput = FileHandle.nullDevice
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -172,19 +183,19 @@ public final class Compressor: @unchecked Sendable {
             var bitrate = (Double(targetBytes) * 0.97 * 8 / info.duration) - retainedRate
             guard bitrate >= 1000 else { throw CompressionError("This target is too small while retaining the original audio and duration. Choose a larger size.") }
             let videoOrdinal = info.streams.filter { $0.codec_type == "video" }.firstIndex { $0.index == video.index } ?? 0
-            let specifier = "v:\(videoOrdinal)"
+            let specifier = info.streams.filter { $0.codec_type == "video" }.count == 1 ? "v" : "v:\(videoOrdinal)"
             var succeeded = false
             for attempt in 0..<7 {
                 try cancellation.check()
                 try? fm.removeItem(at: staged)
-                var args = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-noautorotate", "-i", source.path,
-                            "-map", "0", "-map_metadata", "0", "-map_chapters", "0", "-c", "copy",
-                            "-c:\(specifier)", encoder, "-b:\(specifier)", String(Int(bitrate)), "-fps_mode:\(specifier)", "passthrough"]
-                if let pixelFormat = video.pix_fmt { args += ["-pix_fmt:\(specifier)", "+" + pixelFormat] }
-                if codec == "h264" || codec == "hevc" { args += ["-preset:\(specifier)", "medium"] }
-                if codec == "hevc" { args += ["-x265-params", "log-level=error:pools=4"] }
-                if codec == "av1" { args += ["-preset:\(specifier)", "6"] }
-                if codec == "vp8" || codec == "vp9" { args += ["-deadline", "good", "-cpu-used", "2"] }
+                // Let FFmpeg choose its default preset and retain input format/metadata.
+                // Only request options needed for preserving tracks/timing and controlling size.
+                var args: [String] = []
+                if video.hasRotation { args += ["-noautorotate"] }
+                args += ["-i", source.path]
+                if info.streams.count > 1 { args += ["-map", "0", "-c", "copy"] }
+                args += ["-c:\(specifier)", encoder, "-b:\(specifier)", String(Int(bitrate)),
+                         "-fps_mode:\(specifier)", "passthrough"]
                 let twoPass = codec == "h264" || codec == "vp9" || codec == "vp8" || codec == "mpeg4"
                 let passes = twoPass ? [1, 2] : [0]
                 for pass in passes {
@@ -192,11 +203,11 @@ public final class Compressor: @unchecked Sendable {
                     let phase = pass == 0 ? "" : " · pass \(pass) of 2"
                     update(.init(fraction: 0, message: description + phase))
                     var passArgs = args
-                    if twoPass { passArgs += ["-pass:\(specifier)", String(pass), "-passlogfile:\(specifier)", work.appendingPathComponent("pass").path] }
-                    passArgs += ["-progress", "pipe:1", "-nostats"]
+                    if twoPass { passArgs += ["-pass:\(specifier)", String(pass)] }
+                    passArgs += ["-progress", "pipe:1"]
                     if pass == 1 { passArgs += ["-f", "null", "/dev/null"] }
                     else { passArgs += [staged.path] }
-                    try run(tools.ffmpeg, passArgs, cancellation: cancellation, started: {
+                    try run(tools.ffmpeg, passArgs, cancellation: cancellation, workingDirectory: work, started: {
                         commandStarted(CommandInvocation(executable: self.tools.ffmpeg.path, arguments: passArgs))
                     }) { line in
                         if line.hasPrefix("out_time_us="), let time = Double(line.dropFirst(12)) {
